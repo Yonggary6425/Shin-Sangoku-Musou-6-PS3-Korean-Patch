@@ -8,7 +8,7 @@
 
 | 파일 | 크기 | SHA-256 |
 |---|---|---|
-| `SSM6_KOR_Patch_v1.0_xdelta.zip` | 17.9 MB | `594a7b11cf3fa655f27f78901157c748fc327100ac530759ff6f6be93d1cdea2` |
+| `SSM6_KOR_Patch_v1.0_xdelta.zip` | 17.9 MB | `c4c65faf0a5c99a42f872eb45c1c53adae5097c089703b59592e895e55642091` |
 
 - 원본과의 차이(xdelta)만 담은 패처입니다. 손대지 않은 일본판 원본이 필요합니다.
 - 압축을 풀고 게임 폴더나 ISO를 `한글패치_적용.bat` 위에 끌어다 놓으면 됩니다. 자세한 방법은 `읽어보기.txt`와 README를 보세요.
