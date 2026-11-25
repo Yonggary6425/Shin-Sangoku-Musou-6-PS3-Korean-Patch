@@ -16,6 +16,67 @@ function PutU64([byte[]]$a, [int]$o, [uint64]$v) {
   $b = [BitConverter]::GetBytes($v); if ([BitConverter]::IsLittleEndian) { [Array]::Reverse($b) }
   [Array]::Copy($b, 0, $a, $o, 8)
 }
+# ---------------------------------------------------------------- xdelta
+$kzCs = @'
+using System;
+using System.IO;
+using System.IO.Compression;
+public static class Sm6Kz {
+  static uint U32(byte[] b, int o) { return ((uint)b[o] << 24) | ((uint)b[o + 1] << 16) | ((uint)b[o + 2] << 8) | b[o + 3]; }
+  public static byte[] Decomp(byte[] d) {
+    uint cs = U32(d, 0), n = U32(d, 4), tot = U32(d, 8);
+    int pos = 12 + 4 * (int)n; pos = (pos + 127) & ~127;
+    MemoryStream outm = new MemoryStream((int)tot);
+    for (int k = 0; k < n; k++) {
+      int s = (int)U32(d, 12 + 4 * k);
+      int exp = (int)Math.Min(cs, tot - outm.Length);
+      int zs = (int)U32(d, pos);
+      if (s == exp && (zs != s - 4 || d[pos + 4] != 0x78)) { outm.Write(d, pos, s); }
+      else { using (DeflateStream ds = new DeflateStream(new MemoryStream(d, pos + 6, zs - 2), CompressionMode.Decompress)) { ds.CopyTo(outm); } }
+      pos += s; pos = (pos + 127) & ~127;
+    }
+    if (outm.Length != tot) throw new InvalidDataException("decompress size mismatch");
+    return outm.ToArray();
+  }
+}
+'@
+if (-not ('Sm6Kz' -as [type])) { Add-Type -TypeDefinition $kzCs }
+$XD = Join-Path $here 'xdelta3.exe'
+$PD = $null; $FD = $null; $TMP = $null
+function XdApply([byte[]]$src, [string]$delta, [string]$outFile) {
+  $sp = Join-Path $TMP 'src.bin'
+  [System.IO.File]::WriteAllBytes($sp, $src)
+  $o = & $XD -d -f -s $sp $delta $outFile 2>&1
+  if ($LASTEXITCODE -ne 0) { CleanupTmp; throw ("원본 데이터가 달라 한글 데이터를 만들 수 없습니다(xdelta): " + (Split-Path -Leaf $delta) + " " + ($o -join ' ')) }
+}
+# 원본 데이터 + 차이(xdelta) → 한글 데이터를 임시 폴더에 만든다
+function Prepare([scriptblock]$readOrig, [scriptblock]$readOrigFile, [string]$tmpRoot) {
+  if (-not (Test-Path -LiteralPath $XD)) { throw 'xdelta3.exe가 없습니다. 압축을 다시 풀어 주세요.' }
+  $script:TMP = Join-Path $tmpRoot ('_hanpatch_tmp_' + $cfg.titleId)
+  if (Test-Path -LiteralPath $TMP) { Remove-Item -LiteralPath $TMP -Recurse -Force }
+  $script:PD = Join-Path $TMP 'patch'; $script:FD = Join-Path $TMP 'files'
+  New-Item -ItemType Directory -Force -Path $PD, $FD | Out-Null
+  Say ('원본 데이터에 한글 차이 정보를 적용하는 중... (' + $cfg.entries.Count + '개)')
+  $k = 0
+  foreach ($e in $cfg.entries) {
+    $src = & $readOrig $e
+    if ($e.srcDecomp) { try { $src = [Sm6Kz]::Decomp($src) } catch { CleanupTmp; throw ('원본 데이터가 달라 한글 데이터를 만들 수 없습니다: 리소스 ' + $e.index + ' (지원하지 않는 판본이거나 원본이 손상됨)') } }
+    $out = Join-Path $PD $e.file
+    XdApply $src (Join-Path $here ('delta\' + $e.delta)) $out
+    if ((Sha $out) -ne $e.sha256) { CleanupTmp; throw ('원본 데이터가 달라 한글 데이터를 만들 수 없습니다: 리소스 ' + $e.index + ' (지원하지 않는 판본이거나 원본이 손상됨)') }
+    $k++; if ($k % 100 -eq 0) { Write-Host ("  {0}/{1}" -f $k, $cfg.entries.Count) }
+  }
+  foreach ($f in $cfg.files) {
+    $src = & $readOrigFile $f
+    if ($src -eq $null) { CleanupTmp; throw ('원본 ' + $f.dst + ' 을(를) 찾지 못했습니다. 원본 게임 파일이 필요합니다.') }
+    $out = Join-Path $FD (Split-Path -Leaf $f.dst)
+    XdApply $src (Join-Path $here ('delta\' + $f.delta)) $out
+    if ((Sha $out) -ne $f.sha256) { CleanupTmp; throw ('원본 ' + $f.dst + ' 이(가) 달라 한글판을 만들 수 없습니다.') }
+  }
+  Remove-Item -LiteralPath (Join-Path $TMP 'src.bin') -Force -ErrorAction SilentlyContinue
+}
+function ShaBytes([byte[]]$b) { $h = [System.Security.Cryptography.SHA256]::Create(); return ([BitConverter]::ToString($h.ComputeHash($b)) -replace '-', '').ToLowerInvariant() }
+function CleanupTmp { if ($TMP -and (Test-Path -LiteralPath $TMP)) { Remove-Item -LiteralPath $TMP -Recurse -Force -ErrorAction SilentlyContinue } }
 function IsGameRoot([string]$p) {
   if (-not $p) { return $false }
   return (Test-Path -LiteralPath (Join-Path $p 'PS3_GAME\USRDIR\LINKDATA.IDX'))
@@ -228,11 +289,6 @@ function PatchIso([string]$isoPath) {
     return
   }
   if ([System.IO.Path]::GetFileNameWithoutExtension($isoPath).EndsWith('_KOR')) { throw '이미 한글패치로 만든 ISO입니다. 원본 ISO를 지정하세요.' }
-  Say '패치 파일 검사 중...'
-  foreach ($e in $cfg.entries) {
-    $p = Join-Path $here ('patch\' + $e.file)
-    if (-not (Test-Path -LiteralPath $p) -or (Sha $p) -ne $e.sha256) { throw "패치 파일이 손상되었습니다: $($e.file) (압축을 다시 풀어 주세요)" }
-  }
   Say 'ISO 확인 중...'
   $key = FindDiscKey $isoPath
   $tries = @(); if ($key) { $tries += ,$key }; $tries += ,$null
@@ -255,6 +311,11 @@ function PatchIso([string]$isoPath) {
     if ($A.udf) { Say '  (참고) 이 ISO의 UDF 정보는 갱신하지 않습니다. RPCS3는 ISO9660 정보로 읽습니다.' 'DarkGray' }
     $trees = $A.trees; $P = $A.P; $link = $A.link; $idxRec = $A.idxRec; $idx = $A.idx; $pvdPos = $A.pvdPos; $svdPos = $A.svdPos
     $oldTotal = [int64](U32LE $A.pvd 80)
+    $origIdx = [byte[]]$A.idx.Clone(); $lb0 = [int64]$link[0].lba
+    Prepare { param($e) $o = [int]$e.index * 32; $off = [int64]([uint64]$origIdx[$o]); for ($q = 1; $q -lt 8; $q++) { $off = $off * 256 + $origIdx[$o + $q] }; $zs = 0; for ($q = 0; $q -lt 8; $q++) { $zs = $zs * 256 + $origIdx[$o + 16 + $q] }; return ,($r.ReadBytes($lb0 * 2048 + $off, [int]$zs)) } {
+      param($f) $key = ($f.dst -replace '\\', '/').ToUpperInvariant(); $rec = @($P | Where-Object { $_.path -eq $key })
+      if ($rec.Count -ne 1) { return $null }
+      $b = $r.ReadBytes([int64]$rec[0].lba * 2048, [int]$rec[0].size); if ((ShaBytes $b) -ne $f.origSha) { return $null }; return ,$b } (Split-Path -Parent $isoPath)
     # LINKDATA.BIN 구간
     $first = [int64]$link[0].lba; $sumPrev = [int64]0
     for ($k = 0; $k -lt $link.Count; $k++) {
@@ -288,7 +349,7 @@ function PatchIso([string]$isoPath) {
       $rel = ($E - $first) * 2048
       $k = 0
       foreach ($e in $cfg.entries) {
-        $data = [System.IO.File]::ReadAllBytes((Join-Path $here ('patch\' + $e.file)))
+        $data = [System.IO.File]::ReadAllBytes((Join-Path $PD $e.file))
         WriteAt $dst ($first * 2048 + $rel) $data
         $o = [int]$e.index * 32
         PutU64 $idx $o ([uint64]$rel)
@@ -315,7 +376,7 @@ function PatchIso([string]$isoPath) {
       # 교체 파일 기록
       $rmap = @{}
       foreach ($f in $cfg.files) {
-        $k2 = ($f.dst -replace '\\', '/').ToUpperInvariant(); $data = [System.IO.File]::ReadAllBytes((Join-Path $here $f.src))
+        $k2 = ($f.dst -replace '\\', '/').ToUpperInvariant(); $data = [System.IO.File]::ReadAllBytes((Join-Path $FD (Split-Path -Leaf $f.dst)))
         WriteAt $dst ($next * 2048) $data
         $rmap[$k2] = @{ lba = $next; size = [int64]$data.Length }
         $next += [int64]([Math]::Ceiling($data.Length / 2048.0))
@@ -364,13 +425,14 @@ function PatchIso([string]$isoPath) {
       foreach ($c in (CachePaths $rp ([int]$e.index))) {
         if (-not (Test-Path -LiteralPath $c.full -PathType Leaf)) { continue }
         if ($e.file.EndsWith('.kz')) { Remove-Item -LiteralPath $c.full -Force }
-        else { Copy-Item -LiteralPath (Join-Path $here ('patch\' + $e.file)) -Destination $c.full -Force }
+        else { Copy-Item -LiteralPath (Join-Path $PD $e.file) -Destination $c.full -Force }
         $n++
       }
     }
     Say "  RPCS3 캐시 갱신($rp): $n 개"
   }
   Say ''
+  CleanupTmp
   Say '한글패치 ISO 생성 완료!' 'Green'
   Say ('새 ISO: ' + $outPath) 'Green'
   Say '원본 ISO는 바뀌지 않았습니다. 새 ISO로 게임을 실행하세요.'
@@ -432,7 +494,7 @@ function CachePaths([string]$rp, [int]$i) {
 }
 
 Say '============================================================' 'Cyan'
-Say (' ' + $cfg.name + ' 한글패치 ' + $cfg.version) 'Cyan'
+Say (' ' + $cfg.name + ' 한글패치 ' + $cfg.version + ' (xdelta)') 'Cyan'
 Say ' 본 한글패치는 개인이 제작한 비공식·비상업적 팬 한글패치입니다.' 'Cyan'
 Say ' by Yonggary6425 (용가리)' 'Cyan'
 Say '============================================================' 'Cyan'
@@ -481,15 +543,6 @@ if ($Mode -eq 'remove') {
 }
 
 # ---------------------------------------------------------------- 적용
-Say '패치 파일 검사 중...'
-foreach ($e in $cfg.entries) {
-  $p = Join-Path $here ('patch\' + $e.file)
-  if (-not (Test-Path -LiteralPath $p) -or (Sha $p) -ne $e.sha256) { throw "패치 파일이 손상되었습니다: $($e.file) (압축을 다시 풀어 주세요)" }
-}
-foreach ($f in $cfg.files) {
-  $p = Join-Path $here $f.src
-  if (-not (Test-Path -LiteralPath $p) -or (Get-Item -LiteralPath $p).Length -ne [int64]$f.size) { throw "패치 파일이 손상되었습니다: $($f.src)" }
-}
 
 if (Test-Path -LiteralPath $statePath) {
   $st = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -529,6 +582,21 @@ if (Test-Path -LiteralPath $statePath) {
   $st | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding UTF8
 }
 
+$origIdx = [System.IO.File]::ReadAllBytes((Join-Path $bk 'LINKDATA.IDX'))
+$binR = [System.IO.File]::Open($binPath, 'Open', 'Read', 'ReadWrite')
+try {
+  Prepare { param($e) $o = [int]$e.index * 32; $off = [int64]0; $zs = [int64]0
+    for ($q = 0; $q -lt 8; $q++) { $off = $off * 256 + $origIdx[$o + $q]; $zs = $zs * 256 + $origIdx[$o + 16 + $q] }
+    $buf = New-Object byte[] ([int]$zs); $binR.Position = $off; $got = 0
+    while ($got -lt $zs) { $n = $binR.Read($buf, $got, [int]($zs - $got)); if ($n -le 0) { throw '원본 데이터를 읽을 수 없습니다.' }; $got += $n }
+    return ,$buf } {
+    param($f)
+    $cands = @((Join-Path $bk ('files\' + $f.dst)), (Join-Path $root $f.dst))
+    $leaf = Split-Path -Leaf $f.dst
+    foreach ($lb in $cfg.legacyBackups) { foreach ($nm in @($f.dst, ('movie\' + $leaf), $leaf, ($leaf + '.orig'))) { $cands += (Join-Path (Join-Path $root $lb) $nm) } }
+    foreach ($c in $cands) { if ((Test-Path -LiteralPath $c) -and (Sha $c) -eq $f.origSha) { return ,([System.IO.File]::ReadAllBytes($c)) } }
+    return $null } $root
+} finally { $binR.Dispose() }
 $idx = [System.IO.File]::ReadAllBytes((Join-Path $bk 'LINKDATA.IDX'))
 Say ('LINKDATA.BIN에 한글 데이터 ' + $cfg.entries.Count + '개를 추가하는 중...')
 $fs = [System.IO.File]::Open($binPath, 'Open', 'ReadWrite', 'None')
@@ -538,7 +606,7 @@ try {
   if ($pos % 2048 -ne 0) { $pos += 2048 - ($pos % 2048) }
   $k = 0
   foreach ($e in $cfg.entries) {
-    $data = [System.IO.File]::ReadAllBytes((Join-Path $here ('patch\' + $e.file)))
+    $data = [System.IO.File]::ReadAllBytes((Join-Path $PD $e.file))
     $fs.Position = $pos
     $fs.Write($data, 0, $data.Length)
     $o = [int]$e.index * 32
@@ -564,7 +632,7 @@ try {
 foreach ($f in $cfg.files) {
   $dst = Join-Path $root $f.dst
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
-  Copy-Item -LiteralPath (Join-Path $here $f.src) -Destination $dst -Force
+  Copy-Item -LiteralPath (Join-Path $FD (Split-Path -Leaf $f.dst)) -Destination $dst -Force
   Say ('  교체: ' + $f.dst)
 }
 
@@ -578,7 +646,7 @@ foreach ($rp in $rps) {
       $saved = Join-Path $bk ('cache\' + (Tag $rp) + '\' + $c.rel)
       if (-not (Test-Path -LiteralPath $saved)) { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $saved) | Out-Null; Copy-Item -LiteralPath $c.full -Destination $saved }
       if ($e.file.EndsWith('.kz')) { Remove-Item -LiteralPath $c.full -Force }
-      else { Copy-Item -LiteralPath (Join-Path $here ('patch\' + $e.file)) -Destination $c.full -Force }
+      else { Copy-Item -LiteralPath (Join-Path $PD $e.file) -Destination $c.full -Force }
       $n++
     }
   }
@@ -589,6 +657,7 @@ if ($rps.Count -gt 0) {
   $st | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding UTF8
 }
 
+CleanupTmp
 Say ''
 Say '한글패치 적용 완료!' 'Green'
 Say ('원본 백업 폴더: ' + $bk + '  (지우지 마세요. 제거할 때 필요합니다)')

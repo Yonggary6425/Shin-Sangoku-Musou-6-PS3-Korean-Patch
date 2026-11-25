@@ -7,4 +7,4 @@
 
 ## 포함된 도구
 
-- xdelta판의 `xdelta3.exe`는 xdelta 3.1.0 공식 배포본을 그대로 포함했습니다. (© Joshua P. MacDonald, Apache License 2.0, https://github.com/jmacd/xdelta)
+- 패처의 `xdelta3.exe`는 xdelta 3.1.0 공식 배포본을 그대로 포함했습니다. (© Joshua P. MacDonald, Apache License 2.0, https://github.com/jmacd/xdelta)

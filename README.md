@@ -51,14 +51,10 @@
 
 ## 다운로드
 
-[Releases](../../releases)에서 둘 중 **하나만** 받으면 됩니다. 결과는 똑같습니다.
+[Releases](../../releases)에서 `SSM6_KOR_Patch_v1.0_xdelta.zip`(17.9 MB)을 받습니다.
 
-| 파일 | 크기 | 설명 |
-|---|---|---|
-| `SSM6_KOR_Patch_v1.0.zip` | 147.8 MB | 일반판 — 한글 데이터를 그대로 담은 패처 |
-| `SSM6_KOR_Patch_v1.0_xdelta.zip` | 17.9 MB | xdelta판 — 원본과의 차이만 담은 패처 (원본 게임에서 한글 데이터를 만들어 냄) |
-
-xdelta판은 사용자의 원본 데이터에서 한글 데이터를 만든 뒤 하나하나 해시로 확인하고 적용하므로, 결과가 일반판과 바이트 단위로 같습니다.
+이 패처는 한글 데이터 자체가 아니라 **원본과의 차이(xdelta)**만 담고 있습니다. 사용자의 원본 게임 데이터에서 한글 데이터를 만들어 낸 뒤 하나하나 해시로 확인하고 적용합니다.
+그래서 반드시 손대지 않은 일본판 원본이 필요합니다. 다른 한글패치가 덮어쓴 파일이 있으면 「원본이 아닙니다」라고 나오며 중단됩니다.
 
 ## 적용 방법
 
@@ -100,16 +96,16 @@ xdelta판은 사용자의 원본 데이터에서 한글 데이터를 만든 뒤 
 
 ```
 screenshots/   원본/한글패치 비교 그림
-patcher-src/   패처 스크립트 (PowerShell, 일반판·xdelta판), bat, 읽어보기
+patcher-src/   패처 스크립트 (PowerShell), bat, 읽어보기
 README.md / RELEASE_NOTES.md / NOTICE.md
 ```
 
-패처는 원본 게임 데이터를 검사하는 PowerShell 스크립트(`hanpatch.ps1`)와 한글 데이터(또는 xdelta 차이 데이터)로 이루어져 있습니다. 한글 데이터는 Releases의 zip에 들어 있습니다.
+패처는 원본 게임 데이터를 검사하는 PowerShell 스크립트(`hanpatch.ps1`), xdelta 차이 데이터, `xdelta3.exe`로 이루어져 있습니다. 차이 데이터는 Releases의 zip에 들어 있습니다.
 
 ## 크레딧
 
 - 한글화·패처 제작: **Yonggary6425 (용가리)**
-- xdelta판에 포함된 `xdelta3.exe`: xdelta 3.1.0 (© Joshua P. MacDonald, Apache License 2.0)
+- 패처에 포함된 `xdelta3.exe`: xdelta 3.1.0 (© Joshua P. MacDonald, Apache License 2.0)
 - 원작: 真・三國無双6 © コーエーテクモゲームス (KOEI TECMO GAMES). 모든 권리는 원저작권자에게 있습니다.
 
 ## 버그 제보
